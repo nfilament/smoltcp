@@ -1,5 +1,7 @@
 # About this fork
 
+[![Fork CI](https://github.com/nfilament/smoltcp/actions/workflows/fork.yml/badge.svg?branch=buffer-replace-grow)](https://github.com/nfilament/smoltcp/actions/workflows/fork.yml)
+
 This is an unofficial fork of [smoltcp](https://github.com/smoltcp-rs/smoltcp). It is
 not affiliated with or endorsed by the smoltcp maintainers or NLnet Labs.
 

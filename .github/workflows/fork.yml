@@ -1,0 +1,81 @@
+# This fork's CI (see FORK.md). Upstream's workflows run only on pull requests and merge
+# queues; this one runs the same ci.sh jobs on every push, and weekly against upstream's
+# latest main to show when the fork needs a rebase.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+name: Fork CI
+
+jobs:
+  fmt:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check fmt
+        run: cargo fmt -- --check
+
+  check-msrv:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Checks MSRV
+        run: ./ci.sh check msrv
+
+  test-msrv:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Tests MSRV
+        run: ./ci.sh test msrv
+
+  test-stable:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Tests stable
+        run: ./ci.sh test stable
+
+  clippy:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Clippy
+        run: ./ci.sh clippy
+
+  check-unused:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for unused code
+        run: ./ci.sh check_unused
+
+  test-netsim:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run network-simulation tests
+        run: ./ci.sh netsim
+
+  # Replays the fork's commits onto upstream's latest main and runs the default tests.
+  # Failing means upstream moved: rebase the fork. Not part of the badge's status.
+  upstream-rebase:
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Rebase onto upstream main
+        run: |
+          git config user.name "Fork CI"
+          git config user.email "fork-ci@users.noreply.github.com"
+          git remote add upstream https://github.com/smoltcp-rs/smoltcp.git
+          git fetch --no-tags upstream main
+          echo "Upstream commits not in this branch: $(git rev-list --count HEAD..upstream/main)"
+          git rebase upstream/main
+      - name: Run Tests stable
+        run: cargo test

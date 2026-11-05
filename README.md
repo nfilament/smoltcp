@@ -1,5 +1,7 @@
 # smoltcp
 
+> [![Fork CI](https://github.com/nfilament/smoltcp/actions/workflows/fork.yml/badge.svg?branch=buffer-replace-grow)](https://github.com/nfilament/smoltcp/actions/workflows/fork.yml)
+>
 > **Unofficial fork** with AI-written changes that are not part of smoltcp: see
 > [FORK.md](FORK.md). For smoltcp itself, go to
 > [smoltcp-rs/smoltcp](https://github.com/smoltcp-rs/smoltcp).
