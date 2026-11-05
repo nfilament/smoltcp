@@ -17,6 +17,11 @@ Branch `buffer-replace-grow`, on top of smoltcp `main` at 8b0e5c8 (2026-11-05):
   move a socket's contents into a larger buffer while it is open, out-of-order and
   unacknowledged data included, so connections can start small and grow when
   they carry bulk data (see upstream issue #927).
+- A fix for upstream issue #1227, a remotely triggerable panic: a listening socket with
+  a receive buffer of 64 KiB or more read its SYN-ACK's unscaled window as scaled, so
+  a peer could send up to twice the buffer before the next ACK. The SYN's window is now
+  stored in scaled units, and no segment is accepted past the buffer's free space
+  whatever the window says.
 
 The commit messages explain the conditions and limits; each change has unit tests.
 They come from a userspace TCP/IP stack behind an Android VPN, where thousands of
