@@ -1527,6 +1527,26 @@ impl<'a> Socket<'a> {
         Ok(mem::replace(&mut self.tx_buffer, buffer))
     }
 
+    /// Move the receive buffer into a larger `buffer`, unread and
+    /// out-of-order data included; the window grows with it (up to what the window scale
+    /// agreed at the handshake can say). Returns the old buffer, or `buffer` if smaller.
+    pub fn grow_rx_buffer(
+        &mut self,
+        buffer: SocketBuffer<'a>,
+    ) -> Result<SocketBuffer<'a>, SocketBuffer<'a>> {
+        self.rx_buffer.grow_into(buffer)
+    }
+
+    /// Move the transmit buffer into a larger `buffer`, unsent and
+    /// unacknowledged data included (read by offset from the same start). Returns the old
+    /// buffer, or `buffer` if smaller.
+    pub fn grow_tx_buffer(
+        &mut self,
+        buffer: SocketBuffer<'a>,
+    ) -> Result<SocketBuffer<'a>, SocketBuffer<'a>> {
+        self.tx_buffer.grow_into(buffer)
+    }
+
     fn set_state(&mut self, state: State) {
         if self.state != state {
             tcp_trace!("state={}=>{}", self.state, state);
@@ -9362,6 +9382,88 @@ mod test {
             seq_number: LOCAL_SEQ + 1 + 6,
             ack_number: Some(REMOTE_SEQ + 1),
             payload: &b"ghi"[..],
+            ..RECV_TEMPL
+        }));
+    }
+
+    #[test]
+    fn test_grow_rx_buffer_keeps_unread_and_out_of_order_data() {
+        let mut s = socket_established_with_buffer_sizes(64, 8);
+        send_ignoring_reply(
+            &mut s,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                payload: &b"abc"[..],
+                ..SEND_TEMPL
+            },
+        );
+        send_ignoring_reply(
+            &mut s,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1 + 5,
+                ack_number: Some(LOCAL_SEQ + 1),
+                payload: &b"fg"[..],
+                ..SEND_TEMPL
+            },
+        );
+        assert!(s.grow_rx_buffer(SocketBuffer::new(vec![0; 4])).is_err());
+        let old = s.grow_rx_buffer(SocketBuffer::new(vec![0; 64])).unwrap();
+        assert_eq!(old.capacity(), 8);
+        assert_eq!(s.recv_capacity(), 64);
+        // The gap arrives: in-order, out-of-order and new data read as one.
+        send!(
+            s,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1 + 3,
+                ack_number: Some(LOCAL_SEQ + 1),
+                payload: &b"de"[..],
+                ..SEND_TEMPL
+            },
+            Some(TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 1 + 7),
+                window_len: 57,
+                ..RECV_TEMPL
+            })
+        );
+        s.recv(|buffer| {
+            assert_eq!(buffer, b"abcdefg");
+            (buffer.len(), ())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn test_grow_tx_buffer_keeps_unacknowledged_and_unsent_data() {
+        let mut s = socket_established_with_buffer_sizes(8, 64);
+        s.send_slice(b"abcdef").unwrap();
+        recv!(s, time 1000, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload: &b"abcdef"[..],
+            ..RECV_TEMPL
+        }));
+        // "abc" acknowledged: the buffer's read position moves, and the rest wraps.
+        send!(
+            s,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1 + 3),
+                ..SEND_TEMPL
+            }
+        );
+        assert_eq!(s.send_slice(b"ghijk"), Ok(5));
+        assert!(s.grow_tx_buffer(SocketBuffer::new(vec![0; 4])).is_err());
+        let old = s.grow_tx_buffer(SocketBuffer::new(vec![0; 64])).unwrap();
+        assert_eq!(old.capacity(), 8);
+        assert_eq!(s.send_capacity(), 64);
+        assert_eq!(s.send_slice(b"lmn"), Ok(3));
+        // The unacknowledged "def" is sent again, then the queued data.
+        recv!(s, time 2000, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1 + 3,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload: &b"defghijklmn"[..],
             ..RECV_TEMPL
         }));
     }

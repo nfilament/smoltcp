@@ -67,6 +67,30 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
         }
     }
 
+    /// Move the contents into `other`'s storage, which must be at least as
+    /// large, keeping every element at its offset from the read position: also those in
+    /// the unallocated part (a TCP receive buffer's out-of-order data). Returns the old
+    /// buffer, or `other` itself if it is smaller.
+    pub fn grow_into(
+        &mut self,
+        mut other: RingBuffer<'a, T>,
+    ) -> Result<RingBuffer<'a, T>, RingBuffer<'a, T>>
+    where
+        T: Copy,
+    {
+        let capacity = self.capacity();
+        if other.capacity() < capacity {
+            return Err(other);
+        }
+        let (before, after) = self.storage.split_at(self.read_at.min(capacity));
+        other.storage[..after.len()].copy_from_slice(after);
+        other.storage[after.len()..capacity].copy_from_slice(before);
+        other.read_at = 0;
+        other.length = self.length;
+        core::mem::swap(self, &mut other);
+        Ok(other)
+    }
+
     /// Return the current number of elements in the ring buffer.
     pub fn len(&self) -> usize {
         self.length
@@ -410,6 +434,26 @@ impl<'a, T: 'a> From<ManagedSlice<'a, T>> for RingBuffer<'a, T> {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn test_grow_into_keeps_offsets() {
+        let mut ring = RingBuffer::new(vec![0u8; 8]);
+        assert_eq!(ring.enqueue_slice(b"abcdef"), 6);
+        assert_eq!(ring.dequeue_slice(&mut [0u8; 4]), 4); // "ef" left at 4..6
+        assert_eq!(ring.enqueue_slice(b"ghij"), 4); // wraps: "efghij"
+        assert_eq!(ring.write_unallocated(1, b"X"), 1); // out of order, after one gap
+        let small = RingBuffer::new(vec![0u8; 4]);
+        assert!(ring.grow_into(small).is_err());
+        let old = ring.grow_into(RingBuffer::new(vec![0u8; 16])).unwrap();
+        assert_eq!(old.capacity(), 8);
+        assert_eq!((ring.capacity(), ring.len()), (16, 6));
+        assert_eq!(ring.get_allocated(0, 6), b"efghij");
+        assert_eq!(ring.get_unallocated(1, 1), b"X");
+        assert_eq!(ring.enqueue_slice(&[b'k'; 10]), 10);
+        let mut all = [0u8; 16];
+        assert_eq!(ring.dequeue_slice(&mut all), 16);
+        assert_eq!(&all[..7], b"efghijk");
+    }
 
     #[test]
     fn test_buffer_length_changes() {
