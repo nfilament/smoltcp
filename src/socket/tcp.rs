@@ -1499,6 +1499,34 @@ impl<'a> Socket<'a> {
         self.rx_buffer.len()
     }
 
+    /// Replace the receive buffer once the peer's FIN has arrived and everything before it
+    /// has been read (no more data can come), so a closing connection can give its memory
+    /// back. Returns the old buffer, or `buffer` itself if that is not the
+    /// case yet.
+    pub fn replace_rx_buffer(
+        &mut self,
+        buffer: SocketBuffer<'a>,
+    ) -> Result<SocketBuffer<'a>, SocketBuffer<'a>> {
+        if !self.rx_fin_received || !self.rx_buffer.is_empty() || !self.assembler.is_empty() {
+            return Err(buffer);
+        }
+        Ok(mem::replace(&mut self.rx_buffer, buffer))
+    }
+
+    /// Replace the transmit buffer while it is empty (all data sent and
+    /// acknowledged; nothing is read from it by offset then). A smaller one only limits how
+    /// much can be queued from then on. Returns the old buffer, or `buffer` itself if the
+    /// transmit buffer holds data.
+    pub fn replace_tx_buffer(
+        &mut self,
+        buffer: SocketBuffer<'a>,
+    ) -> Result<SocketBuffer<'a>, SocketBuffer<'a>> {
+        if !self.tx_buffer.is_empty() {
+            return Err(buffer);
+        }
+        Ok(mem::replace(&mut self.tx_buffer, buffer))
+    }
+
     fn set_state(&mut self, state: State) {
         if self.state != state {
             tcp_trace!("state={}=>{}", self.state, state);
@@ -9235,6 +9263,107 @@ mod test {
             (buffer.len(), ())
         })
         .unwrap();
+    }
+
+    fn send_ignoring_reply(s: &mut TestSocket, repr: TcpRepr) {
+        let _ = send(s, Instant::from_millis(0), &repr);
+    }
+
+    #[test]
+    fn test_replace_rx_buffer_after_fin() {
+        let mut s = socket_established();
+        // Nothing buffered, but no FIN yet: more data may come.
+        let empty = s.replace_rx_buffer(SocketBuffer::new(vec![])).unwrap_err();
+        send_ignoring_reply(
+            &mut s,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                payload: &b"abc"[..],
+                ..SEND_TEMPL
+            },
+        );
+        let empty = s.replace_rx_buffer(empty).unwrap_err();
+        send_ignoring_reply(
+            &mut s,
+            TcpRepr {
+                control: TcpControl::Fin,
+                seq_number: REMOTE_SEQ + 1 + 3,
+                ack_number: Some(LOCAL_SEQ + 1),
+                ..SEND_TEMPL
+            },
+        );
+        assert_eq!(s.state, State::CloseWait);
+        // FIN received, but "abc" is still unread.
+        let empty = s.replace_rx_buffer(empty).unwrap_err();
+        s.recv(|buffer| {
+            assert_eq!(buffer, b"abc");
+            (buffer.len(), ())
+        })
+        .unwrap();
+        let old = s.replace_rx_buffer(empty).unwrap();
+        assert_eq!(old.capacity(), 64);
+        assert_eq!(s.recv_capacity(), 0);
+        // The connection still sends.
+        s.send_slice(b"xyz").unwrap();
+        recv!(s, time 0, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1 + 3 + 1),
+            window_len: 0,
+            payload: &b"xyz"[..],
+            ..RECV_TEMPL
+        }));
+    }
+
+    #[test]
+    fn test_replace_rx_buffer_with_a_fin_after_a_gap() {
+        let mut s = socket_established();
+        // Data and a FIN after a gap: the gap is still to come.
+        send_ignoring_reply(
+            &mut s,
+            TcpRepr {
+                control: TcpControl::Fin,
+                seq_number: REMOTE_SEQ + 1 + 3,
+                ack_number: Some(LOCAL_SEQ + 1),
+                payload: &b"def"[..],
+                ..SEND_TEMPL
+            },
+        );
+        assert!(s.replace_rx_buffer(SocketBuffer::new(vec![])).is_err());
+    }
+
+    #[test]
+    fn test_replace_tx_buffer_when_empty() {
+        let mut s = socket_established();
+        s.send_slice(b"abcdef").unwrap();
+        recv!(s, time 0, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload: &b"abcdef"[..],
+            ..RECV_TEMPL
+        }));
+        // Sent but not acknowledged: still needed for a retransmission.
+        let small = s
+            .replace_tx_buffer(SocketBuffer::new(vec![0; 8]))
+            .unwrap_err();
+        send!(
+            s,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1 + 6),
+                ..SEND_TEMPL
+            }
+        );
+        let old = s.replace_tx_buffer(small).unwrap();
+        assert_eq!(old.capacity(), 64);
+        assert_eq!(s.send_capacity(), 8);
+        s.send_slice(b"ghi").unwrap();
+        recv!(s, time 0, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1 + 6,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload: &b"ghi"[..],
+            ..RECV_TEMPL
+        }));
     }
 
     #[test]
