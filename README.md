@@ -1,5 +1,9 @@
 # smoltcp
 
+> **Unofficial fork** with AI-written changes that are not part of smoltcp: see
+> [FORK.md](FORK.md). For smoltcp itself, go to
+> [smoltcp-rs/smoltcp](https://github.com/smoltcp-rs/smoltcp).
+
 [![docs.rs](https://docs.rs/smoltcp/badge.svg)](https://docs.rs/smoltcp)
 [![crates.io](https://img.shields.io/crates/v/smoltcp.svg)](https://crates.io/crates/smoltcp)
 [![crates.io](https://img.shields.io/crates/d/smoltcp.svg)](https://crates.io/crates/smoltcp)
