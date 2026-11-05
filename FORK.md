@@ -22,6 +22,46 @@ The commit messages explain the conditions and limits; each change has unit test
 They come from a userspace TCP/IP stack behind an Android VPN, where thousands of
 connections share a phone's memory.
 
+## Why: what it saved
+
+Measured in that stack, which runs smoltcp 0.12 with these changes. Its policy on top
+of them:
+- each connection's buffers start at 8 KiB and double up to 64 KiB: the receive buffer
+  when a read finds it at least half full, the send buffer when a write does not fit;
+- a grown send buffer goes back to 8 KiB once it is empty and unused for 30 s (the
+  receive buffer keeps its size: shrinking it would take back window already
+  advertised);
+- both buffers are swapped for empty ones as soon as a connection starts closing.
+
+smoltcp's buffers per connection (a test echoing 2 MiB both ways through the stack):
+
+| | fixed 64 KiB buffers | with this fork |
+|---|---|---|
+| a new or idle connection | 128 KiB | 16 KiB |
+| during a bulk transfer | 128 KiB | 128 KiB |
+| idle after a bulk transfer | 128 KiB | 72 KiB |
+| closing (FIN received, all read and acknowledged) | 128 KiB until closed | 0 |
+
+The whole stack under load, on Linux, with 1,000 new TCP connections a second through
+a local proxy server (peak values):
+
+| | fixed 64 KiB buffers | + buffers given back on close | + buffers start small and grow |
+|---|---|---|---|
+| heap | 190 MiB | 65 MiB | 42–53 MiB |
+| process RSS | 78 MiB | 70 MiB | 53 MiB |
+
+Throughput, latency and connection rates stayed within the runs' spread at each step.
+Your numbers depend on how many connections you hold and how they are used; the APIs
+only make such a policy possible, they do not choose one.
+
+## CI
+
+`.github/workflows/fork.yml` runs upstream's own `ci.sh` jobs on every push: rustfmt,
+checks and tests across the feature sets at the MSRV (1.91) and on stable, clippy, the
+unused-code check and the network-simulation tests. A weekly job replays the fork's
+commits onto upstream's latest `main` and runs the tests; when it fails, the fork needs
+a rebase. Upstream's own workflows are kept unchanged.
+
 ## Written with AI, and why it is not upstream
 
 The code, tests and this text were written with an AI assistant (Claude) and
